@@ -14,7 +14,7 @@ pub use std::path;
 pub use std::collections::BTreeMap;
 pub use std::fs::File;
 pub use std::io::{Read, Write};
-use openapi::{Spec, Operation, Operations};
+use openapi::{Spec, Operation, Operations, ParameterOrRef};
 use handlebars::Handlebars;
 use serde_json::Value as JsonValue;
 
@@ -29,21 +29,19 @@ mod errors {
     }
 }
 
-mod gen;
-mod stubs;
-
 pub fn load<P: AsRef<path::Path>>(path: P) -> Result<Spec> {
     let spec = openapi::from_path(path)?;
     Ok(spec)
 }
 
 pub fn generate<P: AsRef<path::Path>>(spec: &Spec, path: P) -> Result<()> {
-    let mut gen = File::create("src/gen.rs")?;
-    let mut stub = File::create("src/stubs.rs")?;
+    let mut gen = File::create("/home/alex/scratch/swaggergen/src/gen.rs")?;
+    let mut stub = File::create("/home/alex/scratch/swaggergen/src/stub.rs")?;
     let mut reg = Handlebars::new();
     let mut routes = Vec::new();
 
-    writeln!(gen, "{}", HEADER)?;
+    writeln!(gen, "{}", GEN_HEADER)?;
+    writeln!(stub, "{}", STUB_HEADER)?;
 
     reg.register_template_string("route", ROUTE_TEMPLATE)?;
     reg.register_template_string("stub", STUB_TEMPLATE)?;
@@ -81,11 +79,17 @@ pub fn generate<P: AsRef<path::Path>>(spec: &Spec, path: P) -> Result<()> {
 }
 
 fn build_route_args(route: &str, method: Method, operation: &Operation) ->  JsonValue {
+    let parameters = if let Some(ref params) = operation.parameters {
+        build_parameters(params)
+    } else {
+        vec![]
+    };
     json!({
         "method": method,
         "route": route,
         // TODO verify that operation_id is valid
-        "function": operation.operation_id
+        "function": operation.operation_id,
+        "parameters": parameters
     })
 }
 
@@ -111,11 +115,9 @@ fn transform_operations(operations: &Operations) -> BTreeMap<Method, &Operation>
 }
 
 const GEN_HEADER: &str = "
-#![feature(plugin)]
-#![plugin(rocket_codegen)]
-
-use stubs::*;
+use stub::*;
 use std::io;
+use rocket;
 ";
 
 const STUB_HEADER: &str = "
@@ -133,12 +135,16 @@ fn launch() -> Result<rocket::Rocket> {
 
 const ROUTE_TEMPLATE: &str = r#"
 #[{{method}}("{{route}}")]
-fn _{{function}}() -> io::Result<{{result_type}}> {
+fn _{{function}}(
+    {{#each parameters as |parameter|}}
+    {{parameter.name}}: {{parameter.type}}
+    {{/each}}
+) -> io::Result<{{result_type}}> {
     {{function}}()
 }"#;
 
 const STUB_TEMPLATE: &str = r#"
-fn {{function}}() -> io::Result<{{result_type}}> {
+pub fn {{function}}() -> io::Result<{{result_type}}> {
     unimplemented!()
 }"#;
 
@@ -150,4 +156,23 @@ enum Method {
     Put,
     Patch,
     Delete,
+}
+
+fn build_parameters(parameters: &Vec<ParameterOrRef>) -> Vec<JsonValue> {
+    use ParameterOrRef::*;
+    let mut res = Vec::new();
+    for param in parameters {
+        let json = match *param {
+            Parameter{ref name, ..} => json!({
+                "name": name,
+                "type": "fake",
+            }),
+            Ref{ ref ref_path } => json!({
+                "name": "fake",
+                "type": "fake",
+            })
+        };
+        res.push(json);
+    }
+    res
 }
