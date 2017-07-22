@@ -64,16 +64,19 @@ impl Entrypoint {
         ))
     }
 
-    pub fn build_template_args(&self) ->  JsonValue {
-        let mut anon_count = 1;
-        let args_json = self.args.iter().map(|arg| {
-            let rendered_type = arg.type_.render(anon_count, &self.operation_id);
-            anon_count = rendered_type.1;
-            json!({
+    pub fn build_template_args(&self) -> JsonValue {
+        let (args_json, anon_count) = self.args.iter().fold(
+            (Vec::new(), 1),
+            |(mut out, anon_count), arg| {
+                let rendered_type = arg.type_.render(anon_count, &self.operation_id);
+                let json = json!({
                 "name": arg.name,
                 "type": rendered_type.0
-            })
-        }).collect::<Vec<_>>();
+            });
+                out.push(json);
+                (out, rendered_type.1)
+            },
+        );
         json!({
             "method": self.method,
             "route": self.route,
@@ -92,10 +95,9 @@ impl Entrypoint {
             vec![Response::new("200".into(),
                                Some(NativeType::String),
                                Some("application/json".into()))],
-            "getSwagger".into()
+            "getSwagger".into(),
         )
     }
-
 }
 
 #[derive(Debug, Clone, new)]
@@ -262,17 +264,15 @@ impl NativeType {
             String => "String".into(),
             Named(ref s) => s.clone(),
             Array(ref natives) => {
-                let rendered_type = natives
-                    .first().unwrap()
-                    .render(anon_count, operation_id);
+                let rendered_type = natives.first().unwrap().render(anon_count, operation_id);
                 anon_count = rendered_type.1;
                 format!("Vec<{}>", rendered_type.0)
-            },
-            Option(ref native) =>  {
+            }
+            Option(ref native) => {
                 let rendered_type = native.render(anon_count, operation_id);
                 anon_count = rendered_type.1;
                 format!("Option<{}>", rendered_type.0)
-            },
+            }
             Anonymous(_) => {
                 anon_count += 1;
                 format!("{}AnonArg{}", operation_id, anon_count - 1)

@@ -63,8 +63,7 @@ pub fn generate<P: AsRef<path::Path>>(spec: &OpenApi, path: P) -> Result<()> {
     }
 
     reg.register_template_string("launch", LAUNCH_TEMPLATE)?;
-    let launch = reg.render("launch",
-                            &json!({"routes": routes}))?;
+    let launch = reg.render("launch", &json!({ "routes": routes }))?;
     writeln!(gen, "{}", launch)?;
 
     Ok(())
