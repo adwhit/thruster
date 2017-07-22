@@ -36,6 +36,22 @@ mod errors {
 pub mod process;
 pub mod templates;
 
+struct Config {
+    dir_path: String,
+    gen: String,
+    stub: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            dir_path: "/tmp/thruster_generated".into(),
+            gen: "gen".into(),
+            stub: "stub".into(),
+        }
+    }
+}
+
 pub fn generate_function_stubs<W: Write>(mut writer: W, spec: &OpenApi) -> Result<()> {
     let mut entrypoints = process::extract_entrypoints(spec);
     let swagger = process::Entrypoint::swagger_entrypoint();
@@ -85,7 +101,7 @@ pub fn generate_main<W: Write>(mut writer: W) -> Result<()> {
     let mut reg = Handlebars::new();
     reg.register_escape_fn(handlebars::no_escape);
     reg.register_template_string("main", MAIN_TEMPLATE)?;
-    let main = reg.render("main", &json!({ "gen": "gen", "stubs": "stubs" }))?;
+    let main = reg.render("main", &json!({ "gen": "gen", "stub": "stub" }))?;
     writeln!(writer, "{}", main)?;
     Ok(())
 }
