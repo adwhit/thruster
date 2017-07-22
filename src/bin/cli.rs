@@ -6,7 +6,7 @@ use thruster::*;
 extern crate error_chain;
 
 fn run() -> Result<()> {
-    let swagger = load("swagger/petstore.yaml")?;
+    let swagger = OpenApi::from_file("example_apis/petstore.yaml")?;
     generate(&swagger, "src/gen.rs")?;
     Ok(())
 }
