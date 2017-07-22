@@ -16,9 +16,11 @@ pub use errors::*;
 pub use std::path;
 pub use std::collections::BTreeMap;
 pub use std::fs::File;
+use std::process::Command;
 pub use std::io::{Read, Write};
 use handlebars::Handlebars;
 pub use openapi3::OpenApi;
+use templates::*;
 
 mod errors {
     error_chain!{
@@ -31,74 +33,108 @@ mod errors {
     }
 }
 
-mod process;
+pub mod process;
+pub mod templates;
 
-pub fn generate<P: AsRef<path::Path>>(spec: &OpenApi, path: P) -> Result<()> {
-
+pub fn generate_function_stubs<W: Write>(mut writer: W, spec: &OpenApi) -> Result<()> {
     let mut entrypoints = process::extract_entrypoints(spec);
-    let mut routes = Vec::new();
-
     let swagger = process::Entrypoint::swagger_entrypoint();
     entrypoints.push(swagger);
 
     let mut reg = Handlebars::new();
     reg.register_escape_fn(handlebars::no_escape);
-    reg.register_template_string("route", ROUTE_TEMPLATE)?;
     reg.register_template_string("stub", STUB_TEMPLATE)?;
+    writeln!(writer, "{}", STUB_HEADER)?;
 
-    let mut gen = File::create("/home/alex/scratch/swaggergen/src/gen.rs")?;
-    let mut stub = File::create("/home/alex/scratch/swaggergen/src/stub.rs")?;
-    writeln!(gen, "{}", GEN_HEADER)?;
-    writeln!(stub, "{}", STUB_HEADER)?;
+    for entry in entrypoints {
+        let tmpl_args = entry.build_template_args();
+        let stubbed = reg.render("stub", &tmpl_args)?;
+        writeln!(writer, "{}", stubbed)?;
+    }
+
+    Ok(())
+}
+
+pub fn generate_server_endpoints<W: Write>(mut writer: W, spec: &OpenApi) -> Result<()> {
+    let mut entrypoints = process::extract_entrypoints(spec);
+    let swagger = process::Entrypoint::swagger_entrypoint();
+    entrypoints.push(swagger);
+
+    let mut routes = Vec::new();
+    let mut reg = Handlebars::new();
+    reg.register_escape_fn(handlebars::no_escape);
+    reg.register_template_string("route", ROUTE_TEMPLATE)?;
+    writeln!(writer, "{}", GEN_HEADER)?;
 
     for entry in entrypoints {
         let tmpl_args = entry.build_template_args();
         routes.push(entry.operation_id);
 
         let rendered = reg.render("route", &tmpl_args)?;
-        writeln!(gen, "{}", rendered)?;
-
-        let stubbed = reg.render("stub", &tmpl_args)?;
-        writeln!(stub, "{}", stubbed)?;
+        writeln!(writer, "{}", rendered)?;
     }
 
     reg.register_template_string("launch", LAUNCH_TEMPLATE)?;
     let launch = reg.render("launch", &json!({ "routes": routes }))?;
-    writeln!(gen, "{}", launch)?;
+    writeln!(writer, "{}", launch)?;
 
     Ok(())
 }
 
-const GEN_HEADER: &str = "
-use stub::*;
-use std::io;
-use rocket;
-";
+pub fn generate_main<W: Write>(mut writer: W) -> Result<()> {
+    let mut reg = Handlebars::new();
+    reg.register_escape_fn(handlebars::no_escape);
+    reg.register_template_string("main", MAIN_TEMPLATE)?;
+    let main = reg.render("main", &json!({ "gen": "gen", "stubs": "stubs" }))?;
+    writeln!(writer, "{}", main)?;
+    Ok(())
+}
 
-const STUB_HEADER: &str = "
-use std::io;
-";
+fn cargo_command(args: &[&str]) -> Result<()> {
+    let mut child = Command::new("cargo").args(args).spawn()?;
+    let ecode = child.wait()?;
+    if !ecode.success() {
+        bail!("Failed to execute Cargo command: {:?}", args)
+    }
+    Ok(())
+}
 
-const LAUNCH_TEMPLATE: &str = r#"
-fn launch() -> Result<rocket::Rocket> {
-    rocket::ignite().mount("/", routes![
-        {{#each routes as |r|~}}
-        _{{r}},
-        {{/each~}}
-    ])
-}"#;
+fn cargo_new(dir_path: &str) -> Result<()> {
+    cargo_command(&["new", "--bin", dir_path])
+}
 
-const ROUTE_TEMPLATE: &str = r#"
-#[{{method}}("{{route}}")]
-fn _{{function}}(
-    {{#each args as |arg|~}}
-    {{arg.name}}: {{arg.type}},
-    {{/each~}}
-) -> io::Result<{{result_type}}> {
-    {{function}}()
-}"#;
+fn cargo_format(dir_path: &str) -> Result<()> {
+    cargo_command(&["fmt"])
+}
 
-const STUB_TEMPLATE: &str = r#"
-pub fn {{function}}() -> io::Result<{{result_type}}> {
-    unimplemented!()
-}"#;
+fn cargo_check(dir_path: &str) -> Result<()> {
+    cargo_command(&["check"])
+}
+
+pub fn bootstrap<P: AsRef<path::Path>>(api_path: P, dir_path: &str) -> Result<()> {
+    let api = OpenApi::from_file(api_path)?;
+    cargo_new(dir_path)?;
+
+    let gen_name = "gen";
+    let stub_name = "stub";
+
+    let path = path::Path::new(dir_path);
+    let srcpath = path.join("src");
+    let gen_path = srcpath.join(format!("{}.rs", gen_name));
+    let stub_path = srcpath.join(format!("{}.rs", stub_name));
+    let main_path = srcpath.join("main.rs");
+
+    let gen_file = File::create(gen_path)?;
+    generate_server_endpoints(gen_file, &api)?;
+
+    let stub_file = File::create(stub_path)?;
+    generate_function_stubs(stub_file, &api)?;
+
+    let main_file = File::create(main_path)?;
+    generate_main(main_file)?;
+
+    cargo_format(dir_path)?;
+    cargo_check(dir_path)?;
+
+    Ok(())
+}
