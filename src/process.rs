@@ -77,13 +77,29 @@ impl Entrypoint {
                 (out, rendered_type.1)
             },
         );
+        // just takes the first response type in the 200 range
+        let result_type = match self.responses
+            .iter()
+            .filter(|resp| resp.status_code.starts_with("2"))
+            .next() {
+            Some(ref resp) => {
+                match resp.return_type {
+                    Some(ref type_) => type_.render(anon_count, &self.operation_id).0,
+                    None => "()".into(),
+                }
+            }
+            None => {
+                eprintln!("Warning: no success code found");
+                "()".into()
+            }
+        };
         json!({
             "method": self.method,
             "route": self.route,
             // TODO verify that operation_id is valid
             "function": self.operation_id,
             "args": args_json,
-            "result_type": "()"
+            "result_type": result_type
         })
     }
 
@@ -328,24 +344,25 @@ mod tests {
 
     #[test]
     fn test_extract_entrypoints() {
-        let yaml = include_str!("../test_specs/petstore.yaml");
+        // TODO test contents of entrypoints
+        let yaml = include_str!("../example_apis/petstore.yaml");
         let api = OpenApi::from_string(yaml).unwrap();
-        let flat = extract_entrypoints(&api);
-        println!("{:#?}", flat);
-        assert_eq!(flat.len(), 3);
+        let entrypoints = extract_entrypoints(&api);
+        assert_eq!(entrypoints.len(), 3);
     }
 
     #[test]
     fn test_atom_schemafy() {
         let schema = r#"{"type": "integer"}"#;
-        let outcome = schemafy::generate(Some("my dummy type"), schema).unwrap();
+        let schema: Schema = serde_json::from_str(schema).unwrap();
+        let outcome = schema.generate_code("my dummy type".into()).unwrap();
         println!("{}", outcome);
         assert!(outcome.contains("MyDummyType = i64"));
     }
 
     #[test]
     fn test_simple_schemafy() {
-        let yaml = include_str!("../test_specs/petstore.yaml");
+        let yaml = include_str!("../example_apis/petstore.yaml");
         let api = OpenApi::from_string(yaml).unwrap();
         let schema: &Schema = api.components
             .as_ref()
@@ -371,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_referenced_schemafy() {
-        let yaml = include_str!("../test_specs/petstore.yaml");
+        let yaml = include_str!("../example_apis/petstore.yaml");
         let api = OpenApi::from_string(yaml).unwrap();
         let schema: &Schema = api.components
             .as_ref()
