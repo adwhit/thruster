@@ -2,7 +2,6 @@ use openapi3::OpenApi;
 use openapi3::objects::*;
 use errors::ErrorKind;
 use regex::Regex;
-use serde_json::to_string as to_json_string;
 use serde_json::Value as JsonValue;
 use std::collections::{BTreeSet, BTreeMap};
 use Result;
@@ -10,10 +9,10 @@ use Result;
 #[derive(Debug, Clone, new)]
 pub struct Entrypoint {
     pub route: String,
-    method: Method,
-    args: Vec<Arg>,
-    responses: Vec<Response>,
-    operation_id: String,
+    pub method: Method,
+    pub args: Vec<Arg>,
+    pub responses: Vec<Response>,
+    pub operation_id: String,
 }
 
 pub fn extract_entrypoints(spec: &OpenApi) -> Vec<Entrypoint> {
@@ -66,10 +65,13 @@ impl Entrypoint {
     }
 
     pub fn build_template_args(&self) ->  JsonValue {
-        let args_json = self.args.iter().enumerate().map(|(ix, arg)| {
+        let mut anon_count = 1;
+        let args_json = self.args.iter().map(|arg| {
+            let rendered_type = arg.type_.render(anon_count, &self.operation_id);
+            anon_count = rendered_type.1;
             json!({
                 "name": arg.name,
-                "type": arg.type_.render(&self.operation_id)
+                "type": rendered_type.0
             })
         }).collect::<Vec<_>>();
         json!({
@@ -80,6 +82,18 @@ impl Entrypoint {
             "args": args_json,
             "result_type": "()"
         })
+    }
+
+    pub fn swagger_entrypoint() -> Entrypoint {
+        Entrypoint::new(
+            "/swagger".into(),
+            Method::Get,
+            Vec::new(),
+            vec![Response::new("200".into(),
+                               Some(NativeType::String),
+                               Some("application/json".into()))],
+            "getSwagger".into()
+        )
     }
 
 }
@@ -166,6 +180,7 @@ fn build_responses(operation: &Operation, components: &Components) -> Vec<Result
 }
 
 #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Method {
     Get,
     Post,
@@ -236,8 +251,34 @@ impl NativeType {
         }
     }
 
-    fn render(&self, operation_id: &str) -> String {
-        "fake".into()
+    fn render(&self, mut anon_count: u32, operation_id: &str) -> (String, u32) {
+        use self::NativeType::*;
+        let res = match *self {
+            I32 => "i32".into(),
+            I64 => "i64".into(),
+            F32 => "f32".into(),
+            F64 => "f64".into(),
+            Bool => "bool".into(),
+            String => "String".into(),
+            Named(ref s) => s.clone(),
+            Array(ref natives) => {
+                let rendered_type = natives
+                    .first().unwrap()
+                    .render(anon_count, operation_id);
+                anon_count = rendered_type.1;
+                format!("Vec<{}>", rendered_type.0)
+            },
+            Option(ref native) =>  {
+                let rendered_type = native.render(anon_count, operation_id);
+                anon_count = rendered_type.1;
+                format!("Option<{}>", rendered_type.0)
+            },
+            Anonymous(_) => {
+                anon_count += 1;
+                format!("{}AnonArg{}", operation_id, anon_count - 1)
+            }
+        };
+        (res, anon_count)
     }
 }
 

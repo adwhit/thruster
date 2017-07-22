@@ -18,7 +18,6 @@ pub use std::collections::BTreeMap;
 pub use std::fs::File;
 pub use std::io::{Read, Write};
 use handlebars::Handlebars;
-use serde_json::Value as JsonValue;
 pub use openapi3::OpenApi;
 
 mod errors {
@@ -36,10 +35,14 @@ mod process;
 
 pub fn generate<P: AsRef<path::Path>>(spec: &OpenApi, path: P) -> Result<()> {
 
-    let entrypoints = process::extract_entrypoints(spec);
+    let mut entrypoints = process::extract_entrypoints(spec);
     let mut routes = Vec::new();
 
+    let swagger = process::Entrypoint::swagger_entrypoint();
+    entrypoints.push(swagger);
+
     let mut reg = Handlebars::new();
+    reg.register_escape_fn(handlebars::no_escape);
     reg.register_template_string("route", ROUTE_TEMPLATE)?;
     reg.register_template_string("stub", STUB_TEMPLATE)?;
 
@@ -50,26 +53,13 @@ pub fn generate<P: AsRef<path::Path>>(spec: &OpenApi, path: P) -> Result<()> {
 
     for entry in entrypoints {
         let tmpl_args = entry.build_template_args();
-        println!("{:#?}", tmpl_args);
-        routes.push(entry.route);
+        routes.push(entry.operation_id);
 
         let rendered = reg.render("route", &tmpl_args)?;
         writeln!(gen, "{}", rendered)?;
 
         let stubbed = reg.render("stub", &tmpl_args)?;
         writeln!(stub, "{}", stubbed)?;
-    }
-
-
-    {
-        let swagger_args = json!({
-            "method": "get",
-            "route": "/swagger",
-            "function": "swagger"
-        });
-        routes.push("swagger".into());
-        let swaggered = reg.render("route", &swagger_args)?;
-        writeln!(gen, "{}", swaggered)?;
     }
 
     reg.register_template_string("launch", LAUNCH_TEMPLATE)?;
