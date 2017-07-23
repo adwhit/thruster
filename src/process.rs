@@ -23,6 +23,7 @@ pub fn extract_entrypoints(spec: &OpenApi) -> Vec<Entrypoint> {
         for (method, op) in path_as_map(path) {
             match Entrypoint::build(route.clone(), method, op, components) {
                 Ok(entrypoint) => out.push(entrypoint),
+                // TODO better error handling
                 Err(e) => eprintln!("{}", e),
             }
         }
@@ -37,15 +38,30 @@ impl Entrypoint {
         operation: &Operation,
         components: &Components,
     ) -> Result<Entrypoint> {
-        // TODO verify route args
-        let route_args = extract_route_args(&route);
         let args = build_args(operation, components)?;
+        let route: String = {
+            let parsed_route = parse_route_args(&route);
+            parsed_route.iter().map(|section| {
+                match *section {
+                    PathOrRouteArg::Path(path) => Ok(path.into()),
+                    PathOrRouteArg::RouteArg(route_arg) => {
+                        if !args.iter().any(|arg| arg.name == route_arg) {
+                            bail!("Route arg {} not found in parameters", route_arg)
+                        }
+                        Ok(format!("<{}>", route_arg))
+                    }
+                    PathOrRouteArg::Invalid(inv) => bail!("Invalid route section: {}", inv)
+                }
+            }).collect::<Result<Vec<String>>>()?
+            .join("/")
+        };
         let responses = build_responses(operation, components);
         let responses = responses
             .into_iter()
             .filter_map(|res| match res {
                 Ok(resp) => Some(resp),
                 Err(e) => {
+                    // TODO better error handling
                     eprintln!("{}", e);
                     None
                 }
@@ -320,14 +336,37 @@ fn path_as_map(path: &Path) -> BTreeMap<Method, &Operation> {
     map
 }
 
-fn extract_route_args(route: &str) -> BTreeSet<String> {
-    let re = Regex::new(r"^\{(.+)\}$").unwrap();
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum PathOrRouteArg<'a> {
+    Path(&'a str),
+    RouteArg(&'a str),
+    Invalid(&'a str)
+}
+
+fn parse_route_args(route: &str) -> Vec<PathOrRouteArg> {
+    // TODO reinventing the wheel here?
+
+    fn is_valid(section: &str) -> bool {
+        !(section.contains('{') || section.contains('}'))
+    }
+
+    let re_route_arg = Regex::new(r"^\{(.+)\}$").unwrap();
     route
         .split("/")
-        .filter_map(|section| re.captures(section))
-        .map(|c| c.get(1).unwrap().as_str().into())
-        .collect()
+        .map(|section| {
+            re_route_arg.captures(section)
+                .map(|c| c.get(1).unwrap().as_str())
+                .map(|s| match is_valid(s) {
+                    true => PathOrRouteArg::RouteArg(s),
+                    false => PathOrRouteArg::Invalid(s),
+                })
+                .unwrap_or_else(|| match is_valid(section) {
+                    true => PathOrRouteArg::Path(section),
+                    false => PathOrRouteArg::Invalid(section),
+                })
+        }).collect()
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -335,11 +374,12 @@ mod tests {
     use serde_json;
 
     #[test]
-    fn test_extract_route_args() {
-        let res = extract_route_args("/pets/{petId}/name/{petName}/x{bogus}x");
-        assert_eq!(res.len(), 2);
-        assert!(res.contains("petId"));
-        assert!(res.contains("petName"));
+    fn test_parse_route_args() {
+        use self::PathOrRouteArg::*;
+        let res = parse_route_args("/pets/{petId}/name/{petName}/x{bogus}/{alsobogus}x");
+        let expect = vec![Path(""), Path("pets"), RouteArg("petId"), Path("name"),
+                          RouteArg("petName"), Invalid("x{bogus}"), Invalid("{alsobogus}x")];
+        assert_eq!(res, expect);
     }
 
     #[test]
