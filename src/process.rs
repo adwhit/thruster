@@ -13,6 +13,8 @@ pub struct Entrypoint {
     pub args: Vec<Arg>,
     pub responses: Vec<Response>,
     pub operation_id: String,
+    pub summary: Option<String>,
+    pub description: Option<String>,
 }
 
 pub fn extract_entrypoints(spec: &OpenApi) -> Vec<Entrypoint> {
@@ -40,21 +42,25 @@ impl Entrypoint {
     ) -> Result<Entrypoint> {
         let args = build_args(operation, components)?;
         let route: String = {
+            // Validate the path arguments against the schema
+            // TODO move this to a proper validation step?
             let parsed_route = parse_route_args(&route);
-            parsed_route.iter().map(|section| {
-                match *section {
+            parsed_route
+                .iter()
+                .map(|section| match *section {
                     PathOrRouteArg::Path(path) => Ok(path.into()),
                     PathOrRouteArg::RouteArg(route_arg) => {
-                        if !args.iter().any(|arg| arg.location == Location::Query
-                                            && arg.name == route_arg) {
+                        if !args.iter().any(|arg| {
+                            arg.location == Location::Path && arg.name == route_arg
+                        }) {
                             bail!("Route arg {} not found in parameters", route_arg)
                         }
                         Ok(format!("<{}>", route_arg))
                     }
-                    PathOrRouteArg::Invalid(inv) => bail!("Invalid route section: {}", inv)
-                }
-            }).collect::<Result<Vec<String>>>()?
-            .join("/")
+                    PathOrRouteArg::Invalid(inv) => bail!("Invalid route section: {}", inv),
+                })
+                .collect::<Result<Vec<String>>>()?
+                .join("/")
         };
         let responses = build_responses(operation, components);
         let responses = responses
@@ -78,6 +84,8 @@ impl Entrypoint {
             args,
             responses,
             operation_id.clone(),
+            operation.summary.clone(),
+            operation.description.clone(),
         ))
     }
 
@@ -94,8 +102,29 @@ impl Entrypoint {
                 (out, rendered_type.1)
             },
         );
+        json!({
+            "method": self.method,
+            "route": self.route,
+            // TODO verify that operation_id is valid
+            "function": self.operation_id,
+            "args": args_json,
+            "result_type": self.result_type(anon_count),
+            "documentation": self.docstring()
+        })
+    }
+
+    fn docstring(&self) -> String {
+        match (self.summary.as_ref(), self.description.as_ref()) {
+            (Some(s), Some(d)) => format!("/// {}\n/// {}\n", s, d), // show both
+            (Some(s), None) => format!("/// {}\n", s),
+            (None, Some(ref d)) => format!("/// {}\n", d),
+            (None, None) => "".into(),
+        }
+    }
+
+    fn result_type(&self, anon_count: u32) -> String {
         // just takes the first response type in the 200 range
-        let result_type = match self.responses
+        match self.responses
             .iter()
             .filter(|resp| resp.status_code.starts_with("2"))
             .next() {
@@ -109,15 +138,7 @@ impl Entrypoint {
                 eprintln!("Warning: no success code found");
                 "()".into()
             }
-        };
-        json!({
-            "method": self.method,
-            "route": self.route,
-            // TODO verify that operation_id is valid
-            "function": self.operation_id,
-            "args": args_json,
-            "result_type": result_type
-        })
+        }
     }
 
     pub fn swagger_entrypoint() -> Entrypoint {
@@ -129,6 +150,8 @@ impl Entrypoint {
                                Some(NativeType::String),
                                Some("application/json".into()))],
             "getSwagger".into(),
+            Some("OpenAPI schema in JSON format".into()),
+            None,
         )
     }
 }
@@ -341,7 +364,7 @@ fn path_as_map(path: &Path) -> BTreeMap<Method, &Operation> {
 enum PathOrRouteArg<'a> {
     Path(&'a str),
     RouteArg(&'a str),
-    Invalid(&'a str)
+    Invalid(&'a str),
 }
 
 fn parse_route_args(route: &str) -> Vec<PathOrRouteArg> {
@@ -355,7 +378,8 @@ fn parse_route_args(route: &str) -> Vec<PathOrRouteArg> {
     route
         .split("/")
         .map(|section| {
-            re_route_arg.captures(section)
+            re_route_arg
+                .captures(section)
                 .map(|c| c.get(1).unwrap().as_str())
                 .map(|s| match is_valid(s) {
                     true => PathOrRouteArg::RouteArg(s),
@@ -365,7 +389,8 @@ fn parse_route_args(route: &str) -> Vec<PathOrRouteArg> {
                     true => PathOrRouteArg::Path(section),
                     false => PathOrRouteArg::Invalid(section),
                 })
-        }).collect()
+        })
+        .collect()
 }
 
 

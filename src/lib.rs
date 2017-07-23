@@ -62,7 +62,7 @@ pub fn generate_server_endpoints<W: Write>(mut writer: W, spec: &OpenApi) -> Res
     let mut routes = Vec::new();
     let mut reg = Handlebars::new();
     reg.register_escape_fn(handlebars::no_escape);
-    reg.register_template_string("route", ROUTE_TEMPLATE)?;
+    reg.register_template_string("route", ENDPOINT_TEMPLATE)?;
     writeln!(writer, "{}", GEN_HEADER)?;
 
     for entry in entrypoints {
@@ -88,7 +88,7 @@ pub fn generate_function_stubs<W: Write>(mut writer: W, spec: &OpenApi) -> Resul
     // TODO put handlebars in lazy-static
     let mut reg = Handlebars::new();
     reg.register_escape_fn(handlebars::no_escape);
-    reg.register_template_string("stub", STUB_TEMPLATE)?;
+    reg.register_template_string("stub", FUNCTION_TEMPLATE)?;
     writeln!(writer, "{}", STUB_HEADER)?;
 
     for entry in entrypoints {
@@ -103,16 +103,22 @@ pub fn generate_function_stubs<W: Write>(mut writer: W, spec: &OpenApi) -> Resul
 pub fn generate_types<W: Write>(mut writer: W, spec: &OpenApi) -> Result<()> {
     use openapi3::objects::CodeGen;
     writeln!(writer, "{}", TYPES_HEADER)?;
-    spec.components.as_ref()
+    spec.components
+        .as_ref()
         .and_then(|components| components.schemas.as_ref())
-        .map(|schemas|
-             schemas.iter().map(|(name, schema)| {
-                 println!("Generating: {}", name);
-                 let code = schema.generate_code(name)?;
-                 writeln!(writer, "{}", code)?;
-                 Ok(())
-             }).collect::<Result<Vec<()>>>().map(|_| ())
-        ).unwrap_or(Ok(()))
+        .map(|schemas| {
+            schemas
+                .iter()
+                .map(|(name, schema)| {
+                    println!("Generating type: {}", name);
+                    let code = schema.generate_code(name)?;
+                    writeln!(writer, "{}", code)?;
+                    Ok(())
+                })
+                .collect::<Result<Vec<()>>>()
+                .map(|_| ())
+        })
+        .unwrap_or(Ok(()))
 }
 
 pub fn generate_main<W: Write>(mut writer: W) -> Result<()> {
@@ -149,7 +155,10 @@ fn cargo_check<P: AsRef<Path>>(dir_path: P) -> Result<()> {
 }
 
 fn cargo_add<P: AsRef<Path>>(dir_path: P) -> Result<()> {
-    cargo_command(dir_path, &["add", "rocket", "rocket_codegen", "serde", "serde_derive"])
+    cargo_command(
+        dir_path,
+        &["add", "rocket", "rocket_codegen", "serde", "serde_derive"],
+    )
 }
 
 pub fn generate_sources<P: AsRef<Path>>(spec: &OpenApi, src_path: P) -> Result<()> {
@@ -208,7 +217,7 @@ pub fn bootstrap<P: AsRef<Path>>(spec_path: P, dir_path: P) -> Result<()> {
 
     cargo_fmt(&crate_path)?;
     cargo_add(&crate_path)?;
-    //cargo_check(&crate_path)?;
+    cargo_check(&crate_path)?;
 
     // TODO don't move if already exists
     let mut child = Command::new("mv")
