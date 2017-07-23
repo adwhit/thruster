@@ -3,7 +3,7 @@ use openapi3::objects::*;
 use errors::ErrorKind;
 use regex::Regex;
 use serde_json::Value as JsonValue;
-use std::collections::{BTreeSet, BTreeMap};
+use std::collections::BTreeMap;
 use Result;
 
 #[derive(Debug, Clone, new)]

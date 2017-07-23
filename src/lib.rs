@@ -30,7 +30,7 @@ mod errors {
             Io(::std::io::Error);
             Render(::handlebars::RenderError);
             Template(::handlebars::TemplateError);
-            OpenApi(::openapi3::Error);
+            OpenApi(::openapi3::Error); // TODO goes in links?
         }
     }
 }
@@ -59,6 +59,7 @@ pub fn generate_function_stubs<W: Write>(mut writer: W, spec: &OpenApi) -> Resul
     let swagger = process::Entrypoint::swagger_entrypoint();
     entrypoints.push(swagger);
 
+    // TODO put handlebars in lazy-static
     let mut reg = Handlebars::new();
     reg.register_escape_fn(handlebars::no_escape);
     reg.register_template_string("stub", STUB_TEMPLATE)?;
@@ -97,6 +98,21 @@ pub fn generate_server_endpoints<W: Write>(mut writer: W, spec: &OpenApi) -> Res
     writeln!(writer, "{}", launch)?;
 
     Ok(())
+}
+
+pub fn generate_types<W: Write>(mut writer: W, spec: &OpenApi) -> Result<()> {
+    use openapi3::objects::CodeGen;
+    writeln!(writer, "{}", TYPES_HEADER)?;
+    spec.components.as_ref()
+        .and_then(|components| components.schemas.as_ref())
+        .map(|schemas|
+             schemas.iter().map(|(name, schema)| {
+                 println!("Generating: {}", name);
+                 let code = schema.generate_code(name)?;
+                 writeln!(writer, "{}", code)?;
+                 Ok(())
+             }).collect::<Result<Vec<()>>>().map(|_| ())
+        ).unwrap_or(Ok(()))
 }
 
 pub fn generate_main<W: Write>(mut writer: W) -> Result<()> {
@@ -156,19 +172,28 @@ pub fn bootstrap<P: AsRef<Path>>(api_path: P, dir_path: P) -> Result<()> {
 
     let gen_name = "gen";
     let stub_name = "stub";
+    let types_name = "types";
 
     let crate_path = tmp_dir.path().join(crate_name);
     let srcpath = crate_path.join("src");
     let gen_path = srcpath.join(format!("{}.rs", gen_name));
     let stub_path = srcpath.join(format!("{}.rs", stub_name));
+    let types_path = srcpath.join(format!("{}.rs", types_name));
     let main_path = srcpath.join("main.rs");
 
+    println!("Generating server endpoints");
     let gen_file = File::create(gen_path)?;
     generate_server_endpoints(gen_file, &api)?;
 
+    println!("Generating stub functions");
     let stub_file = File::create(stub_path)?;
     generate_function_stubs(stub_file, &api)?;
 
+    println!("Generating types");
+    let types_file = File::create(types_path)?;
+    generate_types(types_file, &api)?;
+
+    println!("Generating main");
     let main_file = File::create(main_path)?;
     generate_main(main_file)?;
 
@@ -176,6 +201,7 @@ pub fn bootstrap<P: AsRef<Path>>(api_path: P, dir_path: P) -> Result<()> {
     cargo_add(&crate_path)?;
     //cargo_check(&crate_path)?;
 
+    // TODO don't move if already exists
     let mut child = Command::new("mv")
         .current_dir(tmp_dir.path())
         .args(&[crate_name, dir_path.as_ref().to_str().unwrap()])
