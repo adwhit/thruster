@@ -149,7 +149,7 @@ fn cargo_check<P: AsRef<Path>>(dir_path: P) -> Result<()> {
 }
 
 fn cargo_add<P: AsRef<Path>>(dir_path: P) -> Result<()> {
-    cargo_command(dir_path, &["add", "rocket", "rocket_codegen"])
+    cargo_command(dir_path, &["add", "rocket", "rocket_codegen", "serde", "serde_derive"])
 }
 
 pub fn bootstrap<P: AsRef<Path>>(api_path: P, dir_path: P) -> Result<()> {
