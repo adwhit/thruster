@@ -50,5 +50,5 @@ mod stub;
 fn main() {
     let rocket = rocket::Rocket::ignite();
     let rocket = gen::mount_api(rocket);
-    rocket.launch().unwrap();
+    println!("{}", rocket.launch());
 }"#;

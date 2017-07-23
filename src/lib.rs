@@ -137,6 +137,8 @@ fn cargo_add<P: AsRef<Path>>(dir_path: P) -> Result<()> {
 }
 
 pub fn bootstrap<P: AsRef<Path>>(api_path: P, dir_path: P) -> Result<()> {
+    // TODO assumes cargo, cargo fmt and cargo add are installed
+
     let api = OpenApi::from_file(api_path)?;
 
     let tmp_dir = TempDir::new("thruster-bootstrap")?;
@@ -172,7 +174,16 @@ pub fn bootstrap<P: AsRef<Path>>(api_path: P, dir_path: P) -> Result<()> {
 
     cargo_fmt(&crate_path)?;
     cargo_add(&crate_path)?;
-    cargo_check(&crate_path)?;
+    //cargo_check(&crate_path)?;
+
+    let mut child = Command::new("mv")
+        .current_dir(tmp_dir.path())
+        .args(&[crate_name, dir_path.as_ref().to_str().unwrap()])
+        .spawn()?;
+    let ecode = child.wait()?;
+    if !ecode.success() {
+        bail!("Failed to execute 'mv' command")
+    }
 
     Ok(())
 }
