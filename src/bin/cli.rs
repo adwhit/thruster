@@ -7,7 +7,7 @@ extern crate error_chain;
 
 
 fn run() -> Result<()> {
-    let dir_path = "/tmp/thingy";
+    let dir_path = "/this/could/be/rotterdam/anywhere";
     let api = "example_apis/petstore-expanded.yaml";
     bootstrap(api, dir_path)?;
     Ok(())

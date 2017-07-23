@@ -9,11 +9,12 @@ extern crate handlebars;
 extern crate rocket;
 extern crate openapi3;
 extern crate regex;
+extern crate tempdir;
 #[macro_use]
 extern crate derive_new;
 
 pub use errors::*;
-pub use std::path;
+pub use std::path::Path;
 pub use std::collections::BTreeMap;
 pub use std::fs::File;
 use std::process::Command;
@@ -21,6 +22,7 @@ pub use std::io::{Read, Write};
 use handlebars::Handlebars;
 pub use openapi3::OpenApi;
 use templates::*;
+use tempdir::TempDir;
 
 mod errors {
     error_chain!{
@@ -106,8 +108,11 @@ pub fn generate_main<W: Write>(mut writer: W) -> Result<()> {
     Ok(())
 }
 
-fn cargo_command(args: &[&str]) -> Result<()> {
-    let mut child = Command::new("cargo").args(args).spawn()?;
+fn cargo_command<P: AsRef<Path>>(dir_path: P, args: &[&str]) -> Result<()> {
+    let mut child = Command::new("cargo")
+        .current_dir(dir_path)
+        .args(args)
+        .spawn()?;
     let ecode = child.wait()?;
     if !ecode.success() {
         bail!("Failed to execute Cargo command: {:?}", args)
@@ -115,27 +120,43 @@ fn cargo_command(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn cargo_new(dir_path: &str) -> Result<()> {
-    cargo_command(&["new", "--bin", dir_path])
+fn cargo_new<P: AsRef<Path>>(dir_path: P, crate_name: &str) -> Result<()> {
+    cargo_command(dir_path, &["new", "--bin", crate_name])
 }
 
-fn cargo_format(dir_path: &str) -> Result<()> {
-    cargo_command(&["fmt"])
+fn cargo_fmt<P: AsRef<Path>>(dir_path: P) -> Result<()> {
+    cargo_command(dir_path, &["fmt"])
 }
 
-fn cargo_check(dir_path: &str) -> Result<()> {
-    cargo_command(&["check"])
+fn cargo_check<P: AsRef<Path>>(dir_path: P) -> Result<()> {
+    cargo_command(dir_path, &["check"])
 }
 
-pub fn bootstrap<P: AsRef<path::Path>>(api_path: P, dir_path: &str) -> Result<()> {
+fn cargo_add<P: AsRef<Path>>(dir_path: P) -> Result<()> {
+    cargo_command(dir_path, &["add", "rocket", "rocket_codegen"])
+}
+
+pub fn bootstrap<P: AsRef<Path>>(api_path: P, dir_path: P) -> Result<()> {
     let api = OpenApi::from_file(api_path)?;
-    cargo_new(dir_path)?;
+
+    let tmp_dir = TempDir::new("thruster-bootstrap")?;
+    println!("Created temporary dir: {}", tmp_dir.path().to_string_lossy());
+
+    let crate_name: &str = dir_path
+        .as_ref()
+        .file_name()
+        .ok_or("Could not extract crate name from path".into())
+        .and_then(|s| {
+            s.to_str()
+                .ok_or(ErrorKind::from("Crate name must be valid UTF-8"))
+        })?;
+    cargo_new(tmp_dir.path(), crate_name)?;
 
     let gen_name = "gen";
     let stub_name = "stub";
 
-    let path = path::Path::new(dir_path);
-    let srcpath = path.join("src");
+    let crate_path = tmp_dir.path().join(crate_name);
+    let srcpath = crate_path.join("src");
     let gen_path = srcpath.join(format!("{}.rs", gen_name));
     let stub_path = srcpath.join(format!("{}.rs", stub_name));
     let main_path = srcpath.join("main.rs");
@@ -149,8 +170,9 @@ pub fn bootstrap<P: AsRef<path::Path>>(api_path: P, dir_path: &str) -> Result<()
     let main_file = File::create(main_path)?;
     generate_main(main_file)?;
 
-    cargo_format(dir_path)?;
-    cargo_check(dir_path)?;
+    cargo_fmt(&crate_path)?;
+    cargo_add(&crate_path)?;
+    cargo_check(&crate_path)?;
 
     Ok(())
 }
