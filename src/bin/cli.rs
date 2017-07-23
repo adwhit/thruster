@@ -7,9 +7,10 @@ extern crate error_chain;
 
 
 fn run() -> Result<()> {
-    let dir_path = "/home/alex/scratch/anywhere";
-    let api = "example_apis/petstore.yaml";
-    bootstrap(api, dir_path)?;
+    let src_path = "/home/alex/scratch/anywhere/src";
+    let spec = OpenApi::from_file("example_apis/petstore.yaml")?;
+    // bootstrap(spec, dir_path)?;
+    generate_sources(&spec, src_path)?;
     Ok(())
 }
 

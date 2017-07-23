@@ -45,7 +45,8 @@ impl Entrypoint {
                 match *section {
                     PathOrRouteArg::Path(path) => Ok(path.into()),
                     PathOrRouteArg::RouteArg(route_arg) => {
-                        if !args.iter().any(|arg| arg.name == route_arg) {
+                        if !args.iter().any(|arg| arg.location == Location::Query
+                                            && arg.name == route_arg) {
                             bail!("Route arg {} not found in parameters", route_arg)
                         }
                         Ok(format!("<{}>", route_arg))

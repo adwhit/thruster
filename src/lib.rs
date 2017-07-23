@@ -54,26 +54,6 @@ impl Default for Config {
     }
 }
 
-pub fn generate_function_stubs<W: Write>(mut writer: W, spec: &OpenApi) -> Result<()> {
-    let mut entrypoints = process::extract_entrypoints(spec);
-    let swagger = process::Entrypoint::swagger_entrypoint();
-    entrypoints.push(swagger);
-
-    // TODO put handlebars in lazy-static
-    let mut reg = Handlebars::new();
-    reg.register_escape_fn(handlebars::no_escape);
-    reg.register_template_string("stub", STUB_TEMPLATE)?;
-    writeln!(writer, "{}", STUB_HEADER)?;
-
-    for entry in entrypoints {
-        let tmpl_args = entry.build_template_args();
-        let stubbed = reg.render("stub", &tmpl_args)?;
-        writeln!(writer, "{}", stubbed)?;
-    }
-
-    Ok(())
-}
-
 pub fn generate_server_endpoints<W: Write>(mut writer: W, spec: &OpenApi) -> Result<()> {
     let mut entrypoints = process::extract_entrypoints(spec);
     let swagger = process::Entrypoint::swagger_entrypoint();
@@ -96,6 +76,26 @@ pub fn generate_server_endpoints<W: Write>(mut writer: W, spec: &OpenApi) -> Res
     reg.register_template_string("launch", LAUNCH_TEMPLATE)?;
     let launch = reg.render("launch", &json!({ "routes": routes }))?;
     writeln!(writer, "{}", launch)?;
+
+    Ok(())
+}
+
+pub fn generate_function_stubs<W: Write>(mut writer: W, spec: &OpenApi) -> Result<()> {
+    let mut entrypoints = process::extract_entrypoints(spec);
+    let swagger = process::Entrypoint::swagger_entrypoint();
+    entrypoints.push(swagger);
+
+    // TODO put handlebars in lazy-static
+    let mut reg = Handlebars::new();
+    reg.register_escape_fn(handlebars::no_escape);
+    reg.register_template_string("stub", STUB_TEMPLATE)?;
+    writeln!(writer, "{}", STUB_HEADER)?;
+
+    for entry in entrypoints {
+        let tmpl_args = entry.build_template_args();
+        let stubbed = reg.render("stub", &tmpl_args)?;
+        writeln!(writer, "{}", stubbed)?;
+    }
 
     Ok(())
 }
@@ -152,10 +152,41 @@ fn cargo_add<P: AsRef<Path>>(dir_path: P) -> Result<()> {
     cargo_command(dir_path, &["add", "rocket", "rocket_codegen", "serde", "serde_derive"])
 }
 
-pub fn bootstrap<P: AsRef<Path>>(api_path: P, dir_path: P) -> Result<()> {
+pub fn generate_sources<P: AsRef<Path>>(spec: &OpenApi, src_path: P) -> Result<()> {
+    let src_path: &Path = src_path.as_ref();
+
+    let gen_name = "gen";
+    let stub_name = "stub";
+    let types_name = "types";
+
+    let gen_path = src_path.join(format!("{}.rs", gen_name));
+    let stub_path = src_path.join(format!("{}.rs", stub_name));
+    let types_path = src_path.join(format!("{}.rs", types_name));
+    let main_path = src_path.join("main.rs");
+
+    println!("Generating server endpoints");
+    let gen_file = File::create(gen_path)?;
+    generate_server_endpoints(gen_file, &spec)?;
+
+    println!("Generating stub functions");
+    let stub_file = File::create(stub_path)?;
+    generate_function_stubs(stub_file, &spec)?;
+
+    println!("Generating types");
+    let types_file = File::create(types_path)?;
+    generate_types(types_file, &spec)?;
+
+    println!("Generating main");
+    let main_file = File::create(main_path)?;
+    generate_main(main_file)?;
+
+    Ok(())
+}
+
+pub fn bootstrap<P: AsRef<Path>>(spec_path: P, dir_path: P) -> Result<()> {
     // TODO assumes cargo, cargo fmt and cargo add are installed
 
-    let api = OpenApi::from_file(api_path)?;
+    let spec = OpenApi::from_file(spec_path)?;
 
     let tmp_dir = TempDir::new("thruster-bootstrap")?;
     println!("Created temporary dir: {}", tmp_dir.path().to_string_lossy());
@@ -170,32 +201,10 @@ pub fn bootstrap<P: AsRef<Path>>(api_path: P, dir_path: P) -> Result<()> {
         })?;
     cargo_new(tmp_dir.path(), crate_name)?;
 
-    let gen_name = "gen";
-    let stub_name = "stub";
-    let types_name = "types";
-
     let crate_path = tmp_dir.path().join(crate_name);
     let srcpath = crate_path.join("src");
-    let gen_path = srcpath.join(format!("{}.rs", gen_name));
-    let stub_path = srcpath.join(format!("{}.rs", stub_name));
-    let types_path = srcpath.join(format!("{}.rs", types_name));
-    let main_path = srcpath.join("main.rs");
 
-    println!("Generating server endpoints");
-    let gen_file = File::create(gen_path)?;
-    generate_server_endpoints(gen_file, &api)?;
-
-    println!("Generating stub functions");
-    let stub_file = File::create(stub_path)?;
-    generate_function_stubs(stub_file, &api)?;
-
-    println!("Generating types");
-    let types_file = File::create(types_path)?;
-    generate_types(types_file, &api)?;
-
-    println!("Generating main");
-    let main_file = File::create(main_path)?;
-    generate_main(main_file)?;
+    generate_sources(&spec, &srcpath)?;
 
     cargo_fmt(&crate_path)?;
     cargo_add(&crate_path)?;
