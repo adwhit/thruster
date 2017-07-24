@@ -60,23 +60,16 @@ pub fn generate_server_endpoints<W: Write>(mut writer: W, spec: &OpenApi) -> Res
     let swagger = process::Entrypoint::swagger_entrypoint();
     entrypoints.push(swagger);
 
-    let mut functions = Vec::new();
     let mut reg = Handlebars::new();
     reg.register_escape_fn(handlebars::no_escape);
-    reg.register_template_string("route", ENDPOINT_TEMPLATE)?;
-    writeln!(writer, "{}", GEN_HEADER)?;
-
-    for entry in entrypoints {
-        let tmpl_args = entry.build_template_args();
-        functions.push(entry.operation_id);
-
-        let rendered = reg.render("route", &tmpl_args)?;
-        writeln!(writer, "{}", rendered)?;
-    }
-
-    reg.register_template_string("launch", LAUNCH_TEMPLATE)?;
-    let launch = reg.render("launch", &json!({ "functions": functions }))?;
-    writeln!(writer, "{}", launch)?;
+    reg.register_template_string("gen", GEN_TEMPLATE)?;
+    let tmpl_args: Vec<_> = entrypoints
+        .iter()
+        .map(|entry| entry.build_template_args())
+        .collect();
+    let tmpl_args = json!({ "entrypoints": tmpl_args });
+    let rendered = reg.render("gen", &tmpl_args)?;
+    writeln!(writer, "{}", rendered)?;
 
     Ok(())
 }

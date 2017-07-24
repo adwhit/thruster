@@ -166,8 +166,8 @@ impl OperationId {
     fn new(s: &str) -> Result<OperationId> {
         for byte in s.as_bytes() {
             match *byte {
-                b'A' ... b'Z' | b'a' ... b'z' | b'_' => (),
-                b => bail!("Invalid operationId char '{}'", b)
+                b'A'...b'Z' | b'a'...b'z' | b'_' => (),
+                b => bail!("Invalid operationId char '{}'", b),
             }
         }
         Ok(OperationId(s.to_snake_case()))
