@@ -5,14 +5,15 @@ use regex::Regex;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use Result;
+use inflector::Inflector;
 
-#[derive(Debug, Clone, new)]
-pub struct Entrypoint {
-    pub route: String,
+#[derive(Debug, Clone)]
+pub struct Entrypoint<'a> {
+    route: Route<'a>,
     pub method: Method,
     pub args: Vec<Arg>,
     pub responses: Vec<Response>,
-    pub operation_id: String,
+    pub operation_id: OperationId,
     pub summary: Option<String>,
     pub description: Option<String>,
 }
@@ -23,7 +24,7 @@ pub fn extract_entrypoints(spec: &OpenApi) -> Vec<Entrypoint> {
     components = spec.components.as_ref().unwrap_or(components);
     for (route, path) in &spec.paths {
         for (method, op) in path_as_map(path) {
-            match Entrypoint::build(route.clone(), method, op, components) {
+            match Entrypoint::build(route, method, op, components) {
                 Ok(entrypoint) => out.push(entrypoint),
                 // TODO better error handling
                 Err(e) => eprintln!("{}", e),
@@ -33,35 +34,49 @@ pub fn extract_entrypoints(spec: &OpenApi) -> Vec<Entrypoint> {
     out
 }
 
-impl Entrypoint {
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OperationId(String);
+
+impl OperationId {
+    fn new(s: &str) -> OperationId {
+        OperationId(s.to_snake_case())
+    }
+
+    fn classcase(&self) -> String {
+        self.0.to_class_case()
+    }
+}
+
+impl<'a> Entrypoint<'a> {
+    fn new(
+        route: Route<'a>,
+        method: Method,
+        args: Vec<Arg>,
+        responses: Vec<Response>,
+        operation_id: OperationId,
+        summary: Option<String>,
+        description: Option<String>,
+    ) -> Result<Self> {
+        validate_route_args(&route, &args)?;
+        Ok(Entrypoint {
+            route,
+            method,
+            args,
+            responses,
+            operation_id,
+            summary,
+            description,
+        })
+    }
+
     fn build(
-        route: String,
+        route: &'a str,
         method: Method,
         operation: &Operation,
         components: &Components,
-    ) -> Result<Entrypoint> {
+    ) -> Result<Entrypoint<'a>> {
         let args = build_args(operation, components)?;
-        let route: String = {
-            // Validate the path arguments against the schema
-            // TODO move this to a proper validation step?
-            let parsed_route = parse_route_args(&route);
-            parsed_route
-                .iter()
-                .map(|section| match *section {
-                    PathOrRouteArg::Path(path) => Ok(path.into()),
-                    PathOrRouteArg::RouteArg(route_arg) => {
-                        if !args.iter().any(|arg| {
-                            arg.location == Location::Path && arg.name == route_arg
-                        }) {
-                            bail!("Route arg {} not found in parameters", route_arg)
-                        }
-                        Ok(format!("<{}>", route_arg))
-                    }
-                    PathOrRouteArg::Invalid(inv) => bail!("Invalid route section: {}", inv),
-                })
-                .collect::<Result<Vec<String>>>()?
-                .join("/")
-        };
         let responses = build_responses(operation, components);
         let responses = responses
             .into_iter()
@@ -78,15 +93,15 @@ impl Entrypoint {
             .operation_id
             .as_ref()
             .ok_or(ErrorKind::from("No operation_id found"))?;
-        Ok(Entrypoint::new(
-            route,
+        Entrypoint::new(
+            Route::from_str(&route)?,
             method,
             args,
             responses,
-            operation_id.clone(),
+            OperationId::new(operation_id),
             operation.summary.clone(),
             operation.description.clone(),
-        ))
+        )
     }
 
     pub fn build_template_args(&self) -> JsonValue {
@@ -104,7 +119,7 @@ impl Entrypoint {
         );
         json!({
             "method": self.method,
-            "route": self.route,
+            "route": self.route.render(),
             // TODO verify that operation_id is valid
             "function": self.operation_id,
             "args": args_json,
@@ -113,12 +128,12 @@ impl Entrypoint {
         })
     }
 
-    fn docstring(&self) -> String {
+    fn docstring(&self) -> Option<String> {
         match (self.summary.as_ref(), self.description.as_ref()) {
-            (Some(s), Some(d)) => format!("/// {}\n/// {}\n", s, d), // show both
-            (Some(s), None) => format!("/// {}\n", s),
-            (None, Some(ref d)) => format!("/// {}\n", d),
-            (None, None) => "".into(),
+            (Some(s), Some(d)) => Some(format!("/// {}\n/// {}\n", s, d)), // show both
+            (Some(s), None) => Some(format!("/// {}\n", s)),
+            (None, Some(ref d)) => Some(format!("/// {}\n", d)),
+            (None, None) => None,
         }
     }
 
@@ -141,33 +156,43 @@ impl Entrypoint {
         }
     }
 
-    pub fn swagger_entrypoint() -> Entrypoint {
+    pub fn swagger_entrypoint() -> Entrypoint<'a> {
         Entrypoint::new(
-            "/swagger".into(),
+            Route::from_str("/swagger".into()).unwrap(),
             Method::Get,
             Vec::new(),
             vec![Response::new("200".into(),
                                Some(NativeType::String),
                                Some("application/json".into()))],
-            "getSwagger".into(),
+            OperationId::new("getSwagger"),
             Some("OpenAPI schema in JSON format".into()),
             None,
-        )
+        ).unwrap()
     }
 }
 
-#[derive(Debug, Clone, new)]
+#[derive(Debug, Clone)]
 pub struct Arg {
-    pub name: String,
+    name: String,
     pub type_: NativeType,
     pub location: Location,
+}
+
+impl Arg {
+    fn new(name: &str, type_: NativeType, location: Location) -> Self {
+        Self {
+            name: name.to_snake_case(),
+            type_,
+            location,
+        }
+    }
 }
 
 impl Arg {
     fn build_from_parameter(parameter: &Parameter) -> Result<Arg> {
         let required = parameter.required.unwrap_or(false);
         let native_type = NativeType::from_json_schema(&parameter.schema, required)?;
-        Ok(Arg::new(parameter.name.clone(), native_type, parameter.in_))
+        Ok(Arg::new(&parameter.name, native_type, parameter.in_))
     }
 }
 
@@ -309,7 +334,7 @@ impl NativeType {
         }
     }
 
-    fn render(&self, mut anon_count: u32, operation_id: &str) -> (String, u32) {
+    fn render(&self, mut anon_count: u32, operation_id: &OperationId) -> (String, u32) {
         use self::NativeType::*;
         let res = match *self {
             I32 => "i32".into(),
@@ -331,7 +356,7 @@ impl NativeType {
             }
             Anonymous(_) => {
                 anon_count += 1;
-                format!("{}AnonArg{}", operation_id, anon_count - 1)
+                format!("{}AnonArg{}", operation_id.classcase(), anon_count - 1)
             }
         };
         (res, anon_count)
@@ -361,36 +386,80 @@ fn path_as_map(path: &Path) -> BTreeMap<Method, &Operation> {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-enum PathOrRouteArg<'a> {
+enum RouteSegment<'a> {
     Path(&'a str),
     RouteArg(&'a str),
-    Invalid(&'a str),
 }
 
-fn parse_route_args(route: &str) -> Vec<PathOrRouteArg> {
-    // TODO reinventing the wheel here?
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Route<'a>(Vec<RouteSegment<'a>>);
 
-    fn is_valid(section: &str) -> bool {
-        !(section.contains('{') || section.contains('}'))
+impl<'a> Route<'a> {
+    fn from_str(route: &str) -> Result<Route> {
+        // TODO reinventing the wheel here?
+
+        fn is_valid(section: &str) -> bool {
+            !(section.contains('{') || section.contains('}'))
+        }
+
+        let re_route_arg = Regex::new(r"^\{(.+)\}$").unwrap();
+        let segments = route
+            .split("/")
+            .map(|segment| {
+                re_route_arg
+                    .captures(segment)
+                    .map(|c| c.get(1).unwrap().as_str())
+                    .map(|s| match is_valid(s) {
+                        true => Ok(RouteSegment::RouteArg(s)),
+                        false => bail!("Invalid segment: {}", s),
+                    })
+                    .unwrap_or_else(|| match is_valid(segment) {
+                        true => Ok(RouteSegment::Path(segment)),
+                        false => bail!("Invalid segment: {}", segment),
+                    })
+            })
+            .collect::<Result<Vec<RouteSegment>>>()?;
+        Ok(Route(segments))
     }
 
-    let re_route_arg = Regex::new(r"^\{(.+)\}$").unwrap();
-    route
-        .split("/")
-        .map(|section| {
-            re_route_arg
-                .captures(section)
-                .map(|c| c.get(1).unwrap().as_str())
-                .map(|s| match is_valid(s) {
-                    true => PathOrRouteArg::RouteArg(s),
-                    false => PathOrRouteArg::Invalid(s),
-                })
-                .unwrap_or_else(|| match is_valid(section) {
-                    true => PathOrRouteArg::Path(section),
-                    false => PathOrRouteArg::Invalid(section),
-                })
+    fn render(&self) -> String {
+        self.0
+            .iter()
+            .map(|section| match *section {
+                RouteSegment::Path(path) => path.into(),
+                RouteSegment::RouteArg(route_arg) => format!("<{}>", route_arg.to_snake_case()),
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    fn route_args(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .filter_map(|ra| match *ra {
+                RouteSegment::RouteArg(ref a) => Some(a.to_snake_case()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+
+fn validate_route_args(route: &Route, args: &Vec<Arg>) -> Result<()> {
+    let mut route_args = route.route_args();
+    let mut path_args: Vec<&str> = args.iter()
+        .filter_map(|arg| if arg.location == Location::Path {
+            Some(arg.name.as_str())
+        } else {
+            None
         })
-        .collect()
+        .collect();
+    route_args.sort();
+    path_args.sort();
+    if !(route_args == path_args) {
+        bail!("Path args mismatch - expected {:?}, found {:?}", route_args, path_args)
+    }
+    Ok(())
 }
 
 
@@ -401,11 +470,15 @@ mod tests {
 
     #[test]
     fn test_parse_route_args() {
-        use self::PathOrRouteArg::*;
-        let res = parse_route_args("/pets/{petId}/name/{petName}/x{bogus}/{alsobogus}x");
+        use self::RouteSegment::*;
+        let res = Route::from_str("/pets/{petId}/name/{petName}").unwrap();
         let expect = vec![Path(""), Path("pets"), RouteArg("petId"), Path("name"),
-                          RouteArg("petName"), Invalid("x{bogus}"), Invalid("{alsobogus}x")];
-        assert_eq!(res, expect);
+                          RouteArg("petName")];
+        assert_eq!(res.0, expect);
+
+        assert!(Route::from_str("/pets/{petId}/name/x{bogus}x").is_err());
+        assert!(Route::from_str("/pets/{petId}/name/x{bogus}").is_err());
+        assert!(Route::from_str("/pets/{petId}/name/{bogus}x").is_err());
     }
 
     #[test]
@@ -467,5 +540,54 @@ mod tests {
         let native = NativeType::from_json_schema(&schema, true).unwrap();
         let expect = NativeType::Array(vec![NativeType::Named("Pet".into())]);
         assert_eq!(native, expect);
+    }
+
+    #[test]
+    fn test_entrypoint_render() {
+
+        fn make_entrypoint<'a>(routestr: &'a str) -> Result<Entrypoint<'a>> {
+            let inner_schema: Schema = serde_json::from_value(json!({
+                "properties": {
+                    "some type": {"type": "integer"},
+                    "some other type": {"type": "number"}
+                }
+            })).unwrap();
+            let mut args = vec![
+                Arg::new(
+                    "arg_one".into(),
+                    NativeType::Anonymous(Box::new(inner_schema.clone())),
+                    Location::Path),
+                Arg::new(
+                    "arg_two".into(),
+                    NativeType::Anonymous(Box::new(inner_schema.clone())),
+                    Location::Path),
+                Arg::new(
+                    // TODO this should fail with duplicate arg
+                    "ArgOne".into(),
+                    NativeType::Anonymous(Box::new(inner_schema.clone())),
+                    Location::Query),
+            ];
+            let responses = vec![
+                Response::new(
+                    "200".into(),
+                    None,
+                    None)
+            ];
+            Entrypoint::new(
+                Route::from_str(routestr).unwrap(),
+                Method::Post,
+                args,
+                responses,
+                OperationId::new("my operation id"),
+                None,
+                Some("some description".into()))
+        }
+
+        let route1 = "/this/{argOne}/is/a/route";
+        let route2 = "/this/{argOne}/{ArgTwo}/a/route";
+        let route3 = "/this/{argOne}/{ArgTwo}/{arg_three}/route";
+        assert!(make_entrypoint(route1).is_err());
+        let entrypoint = make_entrypoint(route2).unwrap();
+        assert!(make_entrypoint(route3).is_err());
     }
 }

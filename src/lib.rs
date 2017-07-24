@@ -10,6 +10,7 @@ extern crate rocket;
 extern crate openapi3;
 extern crate regex;
 extern crate tempdir;
+extern crate inflector;
 #[macro_use]
 extern crate derive_new;
 
@@ -59,7 +60,7 @@ pub fn generate_server_endpoints<W: Write>(mut writer: W, spec: &OpenApi) -> Res
     let swagger = process::Entrypoint::swagger_entrypoint();
     entrypoints.push(swagger);
 
-    let mut routes = Vec::new();
+    let mut functions = Vec::new();
     let mut reg = Handlebars::new();
     reg.register_escape_fn(handlebars::no_escape);
     reg.register_template_string("route", ENDPOINT_TEMPLATE)?;
@@ -67,14 +68,14 @@ pub fn generate_server_endpoints<W: Write>(mut writer: W, spec: &OpenApi) -> Res
 
     for entry in entrypoints {
         let tmpl_args = entry.build_template_args();
-        routes.push(entry.operation_id);
+        functions.push(entry.operation_id);
 
         let rendered = reg.render("route", &tmpl_args)?;
         writeln!(writer, "{}", rendered)?;
     }
 
     reg.register_template_string("launch", LAUNCH_TEMPLATE)?;
-    let launch = reg.render("launch", &json!({ "routes": routes }))?;
+    let launch = reg.render("launch", &json!({ "functions": functions }))?;
     writeln!(writer, "{}", launch)?;
 
     Ok(())
