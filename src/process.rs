@@ -18,36 +18,6 @@ pub struct Entrypoint<'a> {
     pub description: Option<String>,
 }
 
-pub fn extract_entrypoints(spec: &OpenApi) -> Vec<Entrypoint> {
-    let mut out = Vec::new();
-    let mut components = &Default::default();
-    components = spec.components.as_ref().unwrap_or(components);
-    for (route, path) in &spec.paths {
-        for (method, op) in path_as_map(path) {
-            match Entrypoint::build(route, method, op, components) {
-                Ok(entrypoint) => out.push(entrypoint),
-                // TODO better error handling
-                Err(e) => eprintln!("{}", e),
-            }
-        }
-    }
-    out
-}
-
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct OperationId(String);
-
-impl OperationId {
-    fn new(s: &str) -> OperationId {
-        OperationId(s.to_snake_case())
-    }
-
-    fn classcase(&self) -> String {
-        self.0.to_class_case()
-    }
-}
-
 impl<'a> Entrypoint<'a> {
     fn new(
         route: Route<'a>,
@@ -98,7 +68,7 @@ impl<'a> Entrypoint<'a> {
             method,
             args,
             responses,
-            OperationId::new(operation_id),
+            OperationId::new(operation_id)?,
             operation.summary.clone(),
             operation.description.clone(),
         )
@@ -164,18 +134,54 @@ impl<'a> Entrypoint<'a> {
             vec![Response::new("200".into(),
                                Some(NativeType::String),
                                Some("application/json".into()))],
-            OperationId::new("getSwagger"),
+            OperationId::new("getSwagger").unwrap(),
             Some("OpenAPI schema in JSON format".into()),
             None,
         ).unwrap()
     }
 }
 
+
+pub fn extract_entrypoints(spec: &OpenApi) -> Vec<Entrypoint> {
+    let mut out = Vec::new();
+    let mut components = &Default::default();
+    components = spec.components.as_ref().unwrap_or(components);
+    for (route, path) in &spec.paths {
+        for (method, op) in path_as_map(path) {
+            match Entrypoint::build(route, method, op, components) {
+                Ok(entrypoint) => out.push(entrypoint),
+                // TODO better error handling
+                Err(e) => eprintln!("{}", e),
+            }
+        }
+    }
+    out
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OperationId(String);
+
+impl OperationId {
+    // TODO make this from<&str> instead
+    fn new(s: &str) -> Result<OperationId> {
+        for byte in s.as_bytes() {
+            match *byte {
+                b'A' ... b'Z' | b'a' ... b'z' | b'_' => (),
+                b => bail!("Invalid operationId char '{}'", b)
+            }
+        }
+        Ok(OperationId(s.to_snake_case()))
+    }
+
+    fn classcase(&self) -> String {
+        self.0.to_class_case()
+    }
+}
 #[derive(Debug, Clone)]
 pub struct Arg {
     name: String,
-    pub type_: NativeType,
-    pub location: Location,
+    type_: NativeType,
+    location: Location,
 }
 
 impl Arg {
@@ -552,7 +558,7 @@ mod tests {
                     "some other type": {"type": "number"}
                 }
             })).unwrap();
-            let mut args = vec![
+            let args = vec![
                 Arg::new(
                     "arg_one".into(),
                     NativeType::Anonymous(Box::new(inner_schema.clone())),
@@ -578,9 +584,10 @@ mod tests {
                 Method::Post,
                 args,
                 responses,
-                OperationId::new("my operation id"),
+                OperationId::new("my_operation_id").unwrap(),
                 None,
-                Some("some description".into()))
+                Some("some description".into()),
+            )
         }
 
         let route1 = "/this/{argOne}/is/a/route";
@@ -589,5 +596,13 @@ mod tests {
         assert!(make_entrypoint(route1).is_err());
         let entrypoint = make_entrypoint(route2).unwrap();
         assert!(make_entrypoint(route3).is_err());
+        assert_eq!(entrypoint.operation_id.0, "my_operation_id");
+    }
+
+    #[test]
+    fn test_operation_id_validity() {
+        assert!(OperationId::new("thisIS_ invalid").is_err());
+        let opid = OperationId::new("thisIS_valid").unwrap();
+        assert_eq!(opid.0, "this_is_valid");
     }
 }
