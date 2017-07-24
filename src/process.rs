@@ -4,14 +4,38 @@ use errors::ErrorKind;
 use regex::Regex;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
+use std::ops::Deref;
+
 use Result;
 use inflector::Inflector;
+
+#[derive(Clone, Debug)]
+pub struct Args(Vec<Arg>);
+
+impl Deref for Args {
+    type Target = Vec<Arg>;
+    fn deref(&self) -> &Vec<Arg> {
+        &self.0
+    }
+}
+
+impl From<Vec<Arg>> for Args {
+    fn from(v: Vec<Arg>) -> Args {
+        Args(v)
+    }
+}
+
+impl Args {
+    fn thing(&self) -> bool {
+        true
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Entrypoint<'a> {
     route: Route<'a>,
     pub method: Method,
-    pub args: Vec<Arg>,
+    pub args: Args,
     pub responses: Vec<Response>,
     pub operation_id: OperationId,
     pub summary: Option<String>,
@@ -22,7 +46,7 @@ impl<'a> Entrypoint<'a> {
     fn new(
         route: Route<'a>,
         method: Method,
-        args: Vec<Arg>,
+        args: Args,
         responses: Vec<Response>,
         operation_id: OperationId,
         summary: Option<String>,
@@ -126,11 +150,15 @@ impl<'a> Entrypoint<'a> {
         }
     }
 
+    fn query_params(&self) -> Option<String> {
+        unimplemented!()
+    }
+
     pub fn swagger_entrypoint() -> Entrypoint<'a> {
         Entrypoint::new(
             Route::from_str("/swagger".into()).unwrap(),
             Method::Get,
-            Vec::new(),
+            Vec::new().into(),
             vec![Response::new("200".into(),
                                Some(NativeType::String),
                                Some("application/json".into()))],
@@ -202,10 +230,10 @@ impl Arg {
     }
 }
 
-fn build_args(operation: &Operation, components: &Components) -> Result<Vec<Arg>> {
+fn build_args(operation: &Operation, components: &Components) -> Result<Args> {
     let op_parameters = match operation.parameters.as_ref() {
         Some(p) => p,
-        None => return Ok(Vec::new()),
+        None => return Ok(Vec::new().into()),
     };
     op_parameters
         .iter()
@@ -215,7 +243,8 @@ fn build_args(operation: &Operation, components: &Components) -> Result<Vec<Arg>
                 .map_err(|e| e.into())
                 .and_then(Arg::build_from_parameter)
         })
-        .collect()
+        .collect::<Result<Vec<Arg>>>()
+        .map(|v| v.into())
 }
 
 #[derive(Debug, Default, Clone, new)]
@@ -451,7 +480,7 @@ impl<'a> Route<'a> {
 }
 
 
-fn validate_route_args(route: &Route, args: &Vec<Arg>) -> Result<()> {
+fn validate_route_args(route: &Route, args: &Args) -> Result<()> {
     let mut route_args = route.route_args();
     let mut path_args: Vec<&str> = args.iter()
         .filter_map(|arg| if arg.location == Location::Path {
@@ -572,7 +601,7 @@ mod tests {
                     "ArgOne".into(),
                     NativeType::Anonymous(Box::new(inner_schema.clone())),
                     Location::Query),
-            ];
+            ].into();
             let responses = vec![
                 Response::new(
                     "200".into(),
