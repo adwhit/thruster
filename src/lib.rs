@@ -14,16 +14,17 @@ extern crate inflector;
 #[macro_use]
 extern crate derive_new;
 
-pub use errors::*;
-pub use std::path::Path;
-pub use std::collections::BTreeMap;
-pub use std::fs::File;
+use std::path::Path;
+use std::fs::File;
 use std::process::Command;
-pub use std::io::{Read, Write};
+use std::io::Write;
 use handlebars::Handlebars;
 pub use openapi3::OpenApi;
-use templates::*;
 use tempdir::TempDir;
+
+pub use errors::*;
+use templates::*;
+use process::Entrypoint;
 
 mod errors {
     error_chain!{
@@ -55,42 +56,40 @@ impl Default for Config {
     }
 }
 
-pub fn generate_server_endpoints<W: Write>(mut writer: W, spec: &OpenApi) -> Result<()> {
-    let mut entrypoints = process::extract_entrypoints(spec);
-    let swagger = process::Entrypoint::swagger_entrypoint();
-    entrypoints.push(swagger);
-
+pub fn generate_server_endpoints<W: Write>(
+    mut writer: W,
+    entrypoints: &Vec<Entrypoint>,
+) -> Result<()> {
     let mut reg = Handlebars::new();
     reg.register_escape_fn(handlebars::no_escape);
     reg.register_template_string("gen", GEN_TEMPLATE)?;
-    let tmpl_args: Vec<_> = entrypoints
-        .iter()
-        .map(|entry| entry.build_template_args())
-        .collect();
-    let tmpl_args = json!({ "entrypoints": tmpl_args });
+    let tmpl_args = json!({
+        "entrypoints": entrypoints
+            .iter()
+            .map(|entry| entry.build_template_args())
+            .collect::<Vec<_>>()
+    });
     let rendered = reg.render("gen", &tmpl_args)?;
     writeln!(writer, "{}", rendered)?;
-
     Ok(())
 }
 
-pub fn generate_function_stubs<W: Write>(mut writer: W, spec: &OpenApi) -> Result<()> {
-    let mut entrypoints = process::extract_entrypoints(spec);
-    let swagger = process::Entrypoint::swagger_entrypoint();
-    entrypoints.push(swagger);
-
+pub fn generate_function_stubs<W: Write>(
+    mut writer: W,
+    entrypoints: &Vec<Entrypoint>,
+) -> Result<()> {
+    let tmpl_args = json!({
+        "entrypoints": entrypoints
+            .iter()
+            .map(|entry| entry.build_template_args())
+            .collect::<Vec<_>>()
+    });
     // TODO put handlebars in lazy-static
     let mut reg = Handlebars::new();
     reg.register_escape_fn(handlebars::no_escape);
-    reg.register_template_string("stub", FUNCTION_TEMPLATE)?;
-    writeln!(writer, "{}", STUB_HEADER)?;
-
-    for entry in entrypoints {
-        let tmpl_args = entry.build_template_args();
-        let stubbed = reg.render("stub", &tmpl_args)?;
-        writeln!(writer, "{}", stubbed)?;
-    }
-
+    reg.register_template_string("stub", STUB_TEMPLATE)?;
+    let rendered = reg.render("stub", &tmpl_args)?;
+    writeln!(writer, "{}", rendered)?;
     Ok(())
 }
 
@@ -124,37 +123,6 @@ pub fn generate_main<W: Write>(mut writer: W) -> Result<()> {
     Ok(())
 }
 
-fn cargo_command<P: AsRef<Path>>(dir_path: P, args: &[&str]) -> Result<()> {
-    let mut child = Command::new("cargo")
-        .current_dir(dir_path)
-        .args(args)
-        .spawn()?;
-    let ecode = child.wait()?;
-    if !ecode.success() {
-        bail!("Failed to execute Cargo command: {:?}", args)
-    }
-    Ok(())
-}
-
-fn cargo_new<P: AsRef<Path>>(dir_path: P, crate_name: &str) -> Result<()> {
-    cargo_command(dir_path, &["new", "--bin", crate_name])
-}
-
-fn cargo_fmt<P: AsRef<Path>>(dir_path: P) -> Result<()> {
-    cargo_command(dir_path, &["fmt"])
-}
-
-fn cargo_check<P: AsRef<Path>>(dir_path: P) -> Result<()> {
-    cargo_command(dir_path, &["check"])
-}
-
-fn cargo_add<P: AsRef<Path>>(dir_path: P) -> Result<()> {
-    cargo_command(
-        dir_path,
-        &["add", "rocket", "rocket_codegen", "serde", "serde_derive"],
-    )
-}
-
 pub fn generate_sources<P: AsRef<Path>>(spec: &OpenApi, src_path: P) -> Result<()> {
     let src_path: &Path = src_path.as_ref();
 
@@ -167,13 +135,17 @@ pub fn generate_sources<P: AsRef<Path>>(spec: &OpenApi, src_path: P) -> Result<(
     let types_path = src_path.join(format!("{}.rs", types_name));
     let main_path = src_path.join("main.rs");
 
+    let mut entrypoints = process::extract_entrypoints(spec);
+    let swagger = process::Entrypoint::swagger_entrypoint();
+    entrypoints.push(swagger);
+
     println!("Generating server endpoints");
     let gen_file = File::create(gen_path)?;
-    generate_server_endpoints(gen_file, &spec)?;
+    generate_server_endpoints(gen_file, &entrypoints)?;
 
     println!("Generating stub functions");
     let stub_file = File::create(stub_path)?;
-    generate_function_stubs(stub_file, &spec)?;
+    generate_function_stubs(stub_file, &entrypoints)?;
 
     println!("Generating types");
     let types_file = File::create(types_path)?;
@@ -224,4 +196,35 @@ pub fn bootstrap<P: AsRef<Path>>(spec_path: P, dir_path: P) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn cargo_command<P: AsRef<Path>>(dir_path: P, args: &[&str]) -> Result<()> {
+    let mut child = Command::new("cargo")
+        .current_dir(dir_path)
+        .args(args)
+        .spawn()?;
+    let ecode = child.wait()?;
+    if !ecode.success() {
+        bail!("Failed to execute Cargo command: {:?}", args)
+    }
+    Ok(())
+}
+
+fn cargo_new<P: AsRef<Path>>(dir_path: P, crate_name: &str) -> Result<()> {
+    cargo_command(dir_path, &["new", "--bin", crate_name])
+}
+
+fn cargo_fmt<P: AsRef<Path>>(dir_path: P) -> Result<()> {
+    cargo_command(dir_path, &["fmt"])
+}
+
+fn cargo_check<P: AsRef<Path>>(dir_path: P) -> Result<()> {
+    cargo_command(dir_path, &["check"])
+}
+
+fn cargo_add<P: AsRef<Path>>(dir_path: P) -> Result<()> {
+    cargo_command(
+        dir_path,
+        &["add", "rocket", "rocket_codegen", "serde", "serde_derive"],
+    )
 }
