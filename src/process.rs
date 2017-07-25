@@ -25,12 +25,6 @@ impl From<Vec<Arg>> for Args {
     }
 }
 
-impl Args {
-    fn thing(&self) -> bool {
-        true
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Entrypoint<'a> {
     route: Route<'a>,
@@ -113,6 +107,7 @@ impl<'a> Entrypoint<'a> {
         );
         json!({
             "method": self.method,
+            "query": self.query_param(),
             "route": self.route.render(),
             // TODO verify that operation_id is valid
             "function": self.operation_id,
@@ -132,7 +127,7 @@ impl<'a> Entrypoint<'a> {
     }
 
     fn result_type(&self, anon_count: u32) -> String {
-        // just takes the first response type in the 200 range
+        // TODO just takes the first response type in the 200 range
         match self.responses
             .iter()
             .filter(|resp| resp.status_code.starts_with("2"))
@@ -150,8 +145,15 @@ impl<'a> Entrypoint<'a> {
         }
     }
 
-    fn query_params(&self) -> Option<String> {
-        unimplemented!()
+    fn query_param(&self) -> Option<String> {
+        let query_params: Vec<_> = self.args.iter()
+            .filter(|arg| arg.location == Location::Query)
+            .collect();
+        if query_params.len() == 0 {
+            None
+        } else {
+            Some("thing".into())
+        }
     }
 
     pub fn swagger_entrypoint() -> Entrypoint<'a> {
@@ -168,7 +170,6 @@ impl<'a> Entrypoint<'a> {
         ).unwrap()
     }
 }
-
 
 pub fn extract_entrypoints(spec: &OpenApi) -> Vec<Entrypoint> {
     let mut out = Vec::new();
